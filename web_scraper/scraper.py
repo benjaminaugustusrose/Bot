@@ -1,70 +1,108 @@
 import yfinance as yf
 import pandas as pd
+import pandas_ta as ta
 
-def screen_stocks(tickers):
+def screen_stocks(stock_list):
     """
-    Screens a list of stock tickers based on volume criteria.
+    Screens a list of stocks based on a specific trading strategy.
+
+    The strategy identifies stocks in a consolidation phase after a
+    significant volume event, with different liquidity rules for US and ASX markets.
 
     Args:
-        tickers (list): A list of stock ticker symbols to screen.
+        stock_list (list): A list of dictionaries, where each dictionary
+                           contains a 'ticker' and 'market' ('US' or 'ASX').
     """
-    print("Starting stock screening process...")
+    print("--- Starting Market Screening ---")
 
-    screened_stocks = []
+    liquidity_rules = {
+        'US': 1000000,
+        'ASX': 300000
+    }
 
-    for ticker in tickers:
+    opportunities_found = 0
+
+    for stock_info in stock_list:
+        ticker = stock_info['ticker']
+        market = stock_info['market']
+
         try:
-            # Create a Ticker object
             stock = yf.Ticker(ticker)
 
-            # Get historical data for the last 60 days
-            hist = stock.history(period="60d")
-
-            if hist.empty:
-                print(f"No data found for {ticker}, skipping.")
+            # --- 1. Liquidity Check (Daily Data) ---
+            daily_data = stock.history(period="5d", interval="1d")
+            if daily_data.empty:
+                print(f"\n[{ticker}] Could not retrieve daily data. Skipping.")
                 continue
 
-            # Calculate 10-day and 30-day average volumes
-            hist['avg_vol_10d'] = hist['Volume'].rolling(window=10).mean()
-            hist['avg_vol_30d'] = hist['Volume'].rolling(window=30).mean()
+            latest_daily_volume = daily_data['Volume'].iloc[-1]
+            liquidity_threshold = liquidity_rules.get(market, 0)
 
-            # Get the most recent data
-            latest_data = hist.iloc[-1]
-            latest_volume = latest_data['Volume']
-            latest_close = latest_data['Close']
-            avg_vol_10d = latest_data['avg_vol_10d']
-            avg_vol_30d = latest_data['avg_vol_30d']
+            if latest_daily_volume < liquidity_threshold:
+                print(f"\n[{ticker}] Skipped: Fails daily volume liquidity check.")
+                print(f"  - Daily Volume: {latest_daily_volume:,.0f}")
+                print(f"  - Required: > {liquidity_threshold:,.0f}")
+                continue
 
-            # Check if the latest volume is at least 2x the 10-day or 30-day average
-            volume_check_10d = latest_volume >= 2 * avg_vol_10d
-            volume_check_30d = latest_volume >= 2 * avg_vol_30d
+            # --- 2. Indicator Analysis (Hourly Data) ---
+            # Fetch ~7 days of hourly data to ensure enough periods for indicators
+            hourly_data = stock.history(period="7d", interval="60m")
+            if hourly_data.empty:
+                print(f"\n[{ticker}] Could not retrieve hourly data. Skipping.")
+                continue
 
-            if volume_check_10d or volume_check_30d:
-                print(f"\n--- POTENTIAL OPPORTUNITY: {ticker} ---")
-                print(f"  Last Close Price: ${latest_close:.2f}")
-                print(f"  Latest Volume: {latest_volume:,.0f}")
+            # Calculate RSI
+            hourly_data.ta.rsi(length=14, append=True)
 
-                if volume_check_10d:
-                    print(f"  10-Day Avg Volume: {avg_vol_10d:,.0f} (Volume is {latest_volume/avg_vol_10d:.2f}x average)")
+            # Calculate Relative Volume (RVOL)
+            hourly_data['avg_vol_20h'] = hourly_data['Volume'].rolling(window=20).mean()
 
-                if volume_check_30d:
-                    print(f"  30-Day Avg Volume: {avg_vol_30d:,.0f} (Volume is {latest_volume/avg_vol_30d:.2f}x average)")
+            # Get the latest full hour's data
+            latest_hour = hourly_data.iloc[-2] # Use -2 to get the last completed hour
 
-                screened_stocks.append(ticker)
+            latest_rsi = latest_hour['RSI_14']
+            latest_volume = latest_hour['Volume']
+            avg_volume_20h = latest_hour['avg_vol_20h']
+
+            if avg_volume_20h == 0: # Avoid division by zero
+                rvol = float('inf')
+            else:
+                rvol = latest_volume / avg_volume_20h
+
+            # --- 3. Final Check ---
+            rsi_condition = latest_rsi < 60
+            rvol_condition = rvol > 2
+
+            print(f"\n[{ticker}] Analyzing...")
+            print(f"  - Daily Volume: {latest_daily_volume:,.0f} (Passes > {liquidity_threshold:,.0f})")
+            print(f"  - Hourly RSI(14): {latest_rsi:.2f} (Condition: < 60)")
+            print(f"  - Hourly RVOL(20): {rvol:.2f} (Condition: > 2)")
+
+            if rsi_condition and rvol_condition:
+                opportunities_found += 1
+                print(f"  *** SUCCESS: POTENTIAL OPPORTUNITY FOUND FOR {ticker} ***")
+            else:
+                print(f"  - Skipped: Did not meet all indicator conditions.")
 
         except Exception as e:
-            print(f"Could not process {ticker}. Reason: {e}")
+            print(f"\n[{ticker}] An error occurred: {e}")
 
-    if not screened_stocks:
-        print("\nNo stocks met the screening criteria.")
-    else:
-        print(f"\nScreening complete. Found {len(screened_stocks)} potential opportunities: {', '.join(screened_stocks)}")
+    print(f"\n--- Screening Complete: Found {opportunities_found} potential opportunities. ---")
 
 
 if __name__ == "__main__":
-    # List of tickers to screen.
-    # Add US, Australian, or other market tickers here.
-    # For example: ['AAPL', 'MSFT', 'GOOG', 'BHP.AX', 'CBA.AX']
-    tickers_to_screen = ['AAPL', 'MSFT', 'TSLA', 'NVDA', 'AMD', 'GOOG', 'AMZN', 'META']
+    # Define the list of stocks to screen
+    stocks_to_screen = [
+        # US Stocks
+        {'ticker': 'AAPL', 'market': 'US'},
+        {'ticker': 'TSLA', 'market': 'US'},
+        {'ticker': 'NVDA', 'market': 'US'},
+        {'ticker': 'GME', 'market': 'US'}, # Known for volatility
 
-    screen_stocks(tickers_to_screen)
+        # ASX Stocks
+        {'ticker': 'CBA.AX', 'market': 'ASX'},
+        {'ticker': 'BHP.AX', 'market': 'ASX'},
+        {'ticker': 'FMG.AX', 'market': 'ASX'},
+    ]
+
+    screen_stocks(stocks_to_screen)
