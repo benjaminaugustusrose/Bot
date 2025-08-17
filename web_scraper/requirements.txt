@@ -1,0 +1,6 @@
+yfinance
+pandas
+pandas-ta
+# Pinned numpy to a version < 2.0 to avoid an ImportError in pandas-ta,
+# which is not yet compatible with numpy 2.0.
+numpy<2.0
